@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package + test deps
+        run: python -m pip install -e . pytest
+      - name: Run unit tests
+        run: python -m pytest -v
+      - name: Ensure lsof is available for the smoke test
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lsof
+      - name: Smoke-test against real df/lsof output on this Linux runner
+        run: |
+          enospc-doctor --version
+          enospc-doctor --help
+          enospc-doctor --json > /tmp/report.json || true
+          python -m json.tool < /tmp/report.json > /dev/null
+          enospc-doctor --all > /tmp/report.txt || true
+          cat /tmp/report.txt
+
+  build-artifact:
+    name: Build .pyz + sdist/wheel and smoke-test on Linux
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Build a standalone .pyz (zipapp)
+        run: |
+          python -m pip install . --target build/pyz_root
+          python -m zipapp build/pyz_root \
+            --main "enospc_doctor.cli:main" \
+            --output dist/enospc-doctor.pyz \
+            --python "/usr/bin/env python3"
+      - name: Smoke-test the .pyz on this Linux runner
+        run: |
+          python3 dist/enospc-doctor.pyz --version
+          python3 dist/enospc-doctor.pyz --json > /tmp/ed.json || true
+          python3 -m json.tool < /tmp/ed.json > /dev/null
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
