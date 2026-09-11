@@ -13,6 +13,7 @@ from enospc_doctor.core import (
     get_reserved_block_pct,
     parse_df_output,
     parse_lsof_deleted,
+    run,
 )
 
 
@@ -173,3 +174,32 @@ def test_diagnose_all_integrates(monkeypatch):
     by_mount = {r.mountpoint: r for r in reports}
     assert by_mount["/"].cause == CAUSE_INODES_FULL
     assert by_mount["/dev/shm"].cause == CAUSE_OK
+
+
+def test_run_swallows_missing_binary_oserror():
+    # A nonexistent command raises OSError (FileNotFoundError) inside
+    # subprocess.run; run() must degrade to "" rather than propagate.
+    assert run(["/no/such/enospc-doctor-binary-xyz", "-v"]) == ""
+
+
+def test_run_swallows_timeout(monkeypatch):
+    import subprocess as sp
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        raise sp.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    assert run(["df"], timeout=1) == ""
+
+
+def test_parse_lsof_deleted_empty_text_returns_empty_list():
+    assert parse_lsof_deleted("") == []
+
+
+def test_get_reserved_block_pct_swallows_unparseable_counts():
+    # Both "Block count:" and "Reserved block count:" lines present but
+    # with non-integer values -- must not raise, and total/reserved stay
+    # unset so the function returns None instead of crashing.
+    out = "Block count:              not-a-number\nReserved block count:     also-bad\n"
+    pct = get_reserved_block_pct("/dev/nvme0n1p2", runner=lambda cmd, timeout=20: out)
+    assert pct is None

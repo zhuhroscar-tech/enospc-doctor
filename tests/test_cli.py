@@ -3,7 +3,7 @@ import json
 import pytest
 
 from enospc_doctor.cli import main
-from enospc_doctor.core import MountDiagnosis, CAUSE_INODES_FULL, CAUSE_OK
+from enospc_doctor.core import DeletedOpenFile, MountDiagnosis, CAUSE_INODES_FULL, CAUSE_OK, CAUSE_RESERVED_BLOCKS
 
 
 def _fake_report(cause=CAUSE_INODES_FULL, mountpoint="/"):
@@ -58,3 +58,39 @@ def test_all_flag_shows_ok_mounts(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "/boot" in out
     assert rc == 0
+
+
+def test_text_output_shows_reserved_block_pct_row(monkeypatch, capsys):
+    report = MountDiagnosis(
+        mountpoint="/", filesystem="/dev/nvme0n1p2",
+        block_use_pct=97, inode_use_pct=10,
+        cause=CAUSE_RESERVED_BLOCKS, explanation="reserved for root",
+        reserved_block_pct=5.0,
+    )
+    monkeypatch.setattr("enospc_doctor.cli.diagnose_all", lambda near_full_threshold: [report])
+    rc = main([])
+    out = capsys.readouterr().out
+    assert "reserved blocks" in out
+    assert "5.0%" in out
+    assert rc == 2
+
+
+def test_text_output_lists_deleted_open_files(monkeypatch, capsys):
+    report = MountDiagnosis(
+        mountpoint="/", filesystem="/dev/nvme0n1p2",
+        block_use_pct=99, inode_use_pct=10,
+        cause=CAUSE_INODES_FULL, explanation="deleted files pinning space",
+        deleted_open_files=[
+            DeletedOpenFile(pid="1234", command="nginx", path="/var/log/nginx/access.log", size_bytes=52428800),
+            DeletedOpenFile(pid="5678", command="python3", path="/tmp/data.tmp", size_bytes=None),
+        ],
+    )
+    monkeypatch.setattr("enospc_doctor.cli.diagnose_all", lambda near_full_threshold: [report])
+    rc = main([])
+    out = capsys.readouterr().out
+    assert "deleted-but-open files pinning space" in out
+    assert "pid 1234 (nginx)" in out
+    assert "52428800 bytes" in out
+    assert "pid 5678 (python3)" in out
+    assert "size unknown" in out
+    assert rc == 2
