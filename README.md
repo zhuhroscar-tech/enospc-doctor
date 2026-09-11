@@ -1,8 +1,22 @@
 # enospc-doctor
 
+[![CI](https://github.com/zhuhroscar-tech/enospc-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/zhuhroscar-tech/enospc-doctor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/zhuhroscar-tech/enospc-doctor?include_prereleases&label=release)](https://github.com/zhuhroscar-tech/enospc-doctor/releases)
+![Linux](https://img.shields.io/badge/platform-Linux-111111?logo=linux)
+
 Diagnose which distinct cause is behind a Linux `No space left on device`
 (`ENOSPC`) error, instead of manually running `df -h`, `df -i`, `du -x`,
 and `lsof +L1` and reconciling the numbers by hand.
+
+## Simple explanation
+
+Your Linux server just said the disk is full, but "full" can mean four
+different things — actually out of space, out of file slots, a deleted
+file a program is still holding open, or just a safety reserve kicking
+in. This tool looks at the affected disk and tells you in plain
+language exactly which one it is, instead of you running several
+commands and reconciling the numbers by hand. It only reads system
+information — it never deletes, frees, or changes anything.
 
 ## The problem
 
