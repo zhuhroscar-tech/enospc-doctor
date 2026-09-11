@@ -41,6 +41,8 @@ single tool distinguishes them automatically:
 
 ## What this does
 
+![enospc-doctor example output](docs/images/example-output.png)
+
 ```
 $ enospc-doctor
 
