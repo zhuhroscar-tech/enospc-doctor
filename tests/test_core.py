@@ -5,6 +5,7 @@ from enospc_doctor.core import (
     CAUSE_OK,
     CAUSE_RESERVED_BLOCKS,
     DeletedOpenFile,
+    assign_deleted_files_to_mounts,
     diagnose_all,
     diagnose_mount,
     get_block_usage,
@@ -203,3 +204,60 @@ def test_get_reserved_block_pct_swallows_unparseable_counts():
     out = "Block count:              not-a-number\nReserved block count:     also-bad\n"
     pct = get_reserved_block_pct("/dev/nvme0n1p2", runner=lambda cmd, timeout=20: out)
     assert pct is None
+
+
+def test_assign_deleted_files_longest_prefix_wins():
+    # Regression: a naive `path.startswith(mountpoint)` check matches a
+    # file under /var/log against BOTH "/" and "/var" (every absolute
+    # path starts with "/"), double-attributing evidence. The most
+    # specific (longest) matching mountpoint must win instead.
+    files = [
+        DeletedOpenFile(command="nginx", pid="1", size_bytes=100, path="/var/log/app.log (deleted)"),
+        DeletedOpenFile(command="root-proc", pid="2", size_bytes=200, path="/tmp/scratch (deleted)"),
+    ]
+    by_mount = assign_deleted_files_to_mounts(files, ["/", "/var"])
+    assert by_mount["/var"] == [files[0]]
+    assert by_mount["/"] == [files[1]]
+
+
+def test_diagnose_all_does_not_leak_deleted_files_across_mounts(monkeypatch):
+    # Regression for the same bug at the diagnose_all() integration level:
+    # a deleted file under /var must not cause "/" to be misdiagnosed as
+    # CAUSE_DELETED_OPEN_FILES when "/" itself has no deleted files and
+    # is otherwise at CAUSE_OK.
+    df_two_mounts = (
+        "Filesystem     1024-blocks      Used  Available Capacity Mounted on\n"
+        "/dev/nvme0n1p2   104857600  41943040   62914560       40% /\n"
+        "/dev/nvme0n1p3    52428800  51380224     524288       99% /var\n"
+    )
+    df_inodes_two_mounts = (
+        "Filesystem      Inodes   IUsed   IFree IUse% Mounted on\n"
+        "/dev/nvme0n1p2 6553600   65536 6488064    1% /\n"
+        "/dev/nvme0n1p3 3276800   32768 3244032    1% /var\n"
+    )
+    lsof_under_var = (
+        "COMMAND     PID   USER   FD   TYPE DEVICE  SIZE/OFF   NODE NAME\n"
+        "nginx      1234  root    6w   REG  253,0    204800 112233 /var/log/nginx/error.log (deleted)\n"
+    )
+
+    def fake_runner(cmd, timeout=20):
+        if cmd[0] == "df" and "-Pi" in cmd:
+            return df_inodes_two_mounts
+        if cmd[0] == "df":
+            return df_two_mounts
+        if cmd[0] == "lsof":
+            return lsof_under_var
+        if cmd[0] == "tune2fs":
+            return "Block count:              104857600\nReserved block count:     0\n"
+        return ""
+
+    reports = diagnose_all(runner=fake_runner)
+    by_mount = {r.mountpoint: r for r in reports}
+    # Before the fix, "/" would also pick up the /var/log deleted file
+    # (via bare startswith("/")) and get misdiagnosed/annotated with it.
+    assert by_mount["/"].cause == CAUSE_OK
+    assert by_mount["/"].deleted_open_files == []
+    # /var is genuinely full (99%) AND has the deleted file -- correctly
+    # attributed to it, not to "/".
+    assert by_mount["/var"].cause == CAUSE_DELETED_OPEN_FILES
+    assert len(by_mount["/var"].deleted_open_files) == 1

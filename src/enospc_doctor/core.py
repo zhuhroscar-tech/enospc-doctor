@@ -210,6 +210,29 @@ class MountDiagnosis:
         }
 
 
+def assign_deleted_files_to_mounts(deleted_open_files: list, mountpoints: list) -> dict:
+    """Attribute each deleted-but-open file to exactly one mountpoint: the
+    longest matching path prefix among the given mountpoints (standard
+    "most specific mount wins" rule, same as how the kernel itself
+    resolves which mount a path belongs to).
+
+    Without this, a naive `path.startswith(mountpoint)` check matches a
+    file under e.g. /var/log against BOTH "/" and "/var" (every absolute
+    path starts with "/"), so the same evidence gets double-attributed to
+    unrelated mounts and can misdiagnose one mount using another mount's
+    open-deleted-file evidence.
+    """
+    by_mount: dict = {mp: [] for mp in mountpoints}
+    # Longest mountpoint first so the most specific match wins.
+    sorted_mounts = sorted(mountpoints, key=len, reverse=True)
+    for f in deleted_open_files:
+        for mp in sorted_mounts:
+            if mp == "/" or f.path.startswith(mp.rstrip("/") + "/") or f.path == mp:
+                by_mount[mp].append(f)
+                break
+    return by_mount
+
+
 def diagnose_mount(
     mountpoint: str,
     filesystem: str,
@@ -225,9 +248,16 @@ def diagnose_mount(
     most surprising symptom (df -h looks fine); then deleted-but-open
     files (df/du disagreement); then genuine block exhaustion; then
     reserved-block false-full; else ok.
+
+    `deleted_open_files` here is expected to already be scoped to this
+    mount (see `assign_deleted_files_to_mounts`); callers that pass an
+    unscoped, fleet-wide list (as older versions of this function did)
+    will over-attribute evidence to every mount that is "/" or whose
+    path happens to be a string prefix -- use `diagnose_all`, which does
+    the scoping correctly, rather than calling this directly with a raw
+    lsof list for anything but a single-mount system.
     """
-    deleted_open_files = deleted_open_files or []
-    mount_deleted = [f for f in deleted_open_files if f.path.startswith(mountpoint) or mountpoint == "/"]
+    mount_deleted = deleted_open_files or []
 
     if inode_use_pct is not None and inode_use_pct >= near_full_threshold and (
         block_use_pct is None or block_use_pct < near_full_threshold
@@ -260,6 +290,7 @@ def diagnose_all(runner=run, near_full_threshold: int = 95) -> list:
     blocks = get_block_usage(runner=runner)
     inodes = get_inode_usage(runner=runner)
     deleted = get_deleted_open_files(runner=runner)
+    deleted_by_mount = assign_deleted_files_to_mounts(deleted, list(blocks.keys()))
 
     reports = []
     for mountpoint, (fs, block_pct) in blocks.items():
@@ -273,7 +304,7 @@ def diagnose_all(runner=run, near_full_threshold: int = 95) -> list:
                 filesystem=fs,
                 block_use_pct=block_pct,
                 inode_use_pct=inode_pct,
-                deleted_open_files=deleted,
+                deleted_open_files=deleted_by_mount.get(mountpoint, []),
                 reserved_block_pct=reserved_pct,
                 near_full_threshold=near_full_threshold,
             )
