@@ -1,6 +1,8 @@
 from enospc_doctor.core import (
     CAUSE_BLOCKS_FULL,
     CAUSE_DELETED_OPEN_FILES,
+    CAUSE_DIAGNOSTIC_FAILED,
+    CAUSE_EXPLANATIONS,
     CAUSE_INODES_FULL,
     CAUSE_OK,
     CAUSE_RESERVED_BLOCKS,
@@ -157,6 +159,23 @@ def test_diagnose_mount_to_dict_roundtrip():
     assert d["mountpoint"] == "/"
     assert d["cause"] == CAUSE_BLOCKS_FULL
     assert isinstance(d["deleted_open_files"], list)
+
+
+def test_diagnose_all_reports_diagnostic_failed_when_df_returns_nothing():
+    # Regression: before this fix, diagnose_all() returned an empty list
+    # when `df -P` produced no parseable lines at all (missing binary,
+    # permission error, unexpected format) -- indistinguishable from
+    # "every mount checked, none has a problem", so main()'s `any(...)`
+    # exit-code check silently reported success/OK on a real diagnostic
+    # failure instead of surfacing it. It must instead return exactly one
+    # CAUSE_DIAGNOSTIC_FAILED report.
+    def empty_runner(cmd, timeout=20):
+        return ""
+
+    reports = diagnose_all(runner=empty_runner)
+    assert len(reports) == 1
+    assert reports[0].cause == CAUSE_DIAGNOSTIC_FAILED
+    assert reports[0].explanation == CAUSE_EXPLANATIONS[CAUSE_DIAGNOSTIC_FAILED]
 
 
 def test_diagnose_all_integrates(monkeypatch):

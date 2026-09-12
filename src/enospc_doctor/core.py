@@ -42,6 +42,7 @@ CAUSE_INODES_FULL = "inodes_full"
 CAUSE_DELETED_OPEN_FILES = "deleted_open_files"
 CAUSE_RESERVED_BLOCKS = "reserved_blocks_only"
 CAUSE_OK = "ok"
+CAUSE_DIAGNOSTIC_FAILED = "diagnostic_failed"
 
 CAUSE_EXPLANATIONS = {
     CAUSE_BLOCKS_FULL: (
@@ -71,6 +72,13 @@ CAUSE_EXPLANATIONS = {
         "non-reserved capacity."
     ),
     CAUSE_OK: "This filesystem shows no signs of block or inode exhaustion.",
+    CAUSE_DIAGNOSTIC_FAILED: (
+        "'df' returned no parseable mount data at all (empty output, unexpected "
+        "format, or the binary is missing/unreadable in this environment). This "
+        "is NOT the same as 'no issues found' -- no filesystem was actually "
+        "checked, so a real ENOSPC condition could be silently missed. Verify "
+        "'df -P' works in this environment and re-run."
+    ),
 }
 
 
@@ -286,8 +294,27 @@ def diagnose_mount(
 
 
 def diagnose_all(runner=run, near_full_threshold: int = 95) -> list:
-    """Diagnose every mounted filesystem reported by df."""
+    """Diagnose every mounted filesystem reported by df.
+
+    If `df -P` itself returns no parseable mount lines (missing binary,
+    permission failure, unexpected output format, etc.), this returns a
+    single CAUSE_DIAGNOSTIC_FAILED report rather than an empty list --
+    an empty list is otherwise indistinguishable from "every mount was
+    checked and none has a problem", which would let a real ENOSPC
+    condition go completely unreported.
+    """
     blocks = get_block_usage(runner=runner)
+    if not blocks:
+        return [
+            MountDiagnosis(
+                mountpoint="(unknown)",
+                filesystem="(unknown)",
+                block_use_pct=None,
+                inode_use_pct=None,
+                cause=CAUSE_DIAGNOSTIC_FAILED,
+                explanation=CAUSE_EXPLANATIONS[CAUSE_DIAGNOSTIC_FAILED],
+            )
+        ]
     inodes = get_inode_usage(runner=runner)
     deleted = get_deleted_open_files(runner=runner)
     deleted_by_mount = assign_deleted_files_to_mounts(deleted, list(blocks.keys()))

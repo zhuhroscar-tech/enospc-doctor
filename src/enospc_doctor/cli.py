@@ -6,7 +6,7 @@ import json
 import sys
 
 from . import __version__
-from .core import diagnose_all, CAUSE_OK
+from .core import diagnose_all, CAUSE_OK, CAUSE_DIAGNOSTIC_FAILED
 from .style import print_fields, resolve_style, status_headline
 
 
@@ -44,6 +44,8 @@ def _print_text(reports, show_all: bool, style) -> None:
         print()
         print(status_headline(style, level, f"{r.mountpoint} ({r.filesystem}): {r.cause}"))
         print(f"  {r.explanation}")
+        if r.cause == CAUSE_DIAGNOSTIC_FAILED:
+            continue
         rows = [
             ("block use", f"{r.block_use_pct}%"),
             ("inode use", f"{r.inode_use_pct}%"),
