@@ -147,6 +147,15 @@ def parse_lsof_deleted(text: str) -> list:
         pid_i = header.index("PID")
     except ValueError:
         cmd_i, pid_i = 0, 1
+    # SIZE/OFF's column index in the header tells us which split token is
+    # the real size, instead of guessing by "first digit token > 1024" --
+    # that heuristic previously matched PID (also a large digit string)
+    # before ever reaching the real SIZE/OFF column, silently reporting the
+    # PID as the file size for every entry.
+    try:
+        size_i = header.index("SIZE/OFF")
+    except ValueError:
+        size_i = None
     for line in lines[1:]:
         if not line.strip():
             continue
@@ -155,14 +164,12 @@ def parse_lsof_deleted(text: str) -> list:
             continue
         command = parts[cmd_i] if cmd_i < len(parts) else parts[0]
         pid = parts[pid_i] if pid_i < len(parts) else parts[1]
-        # SIZE/OFF is typically the 7th column in `lsof +L1` output; NAME is
-        # the last column and includes "(deleted)" when unlinked-but-open.
+        # NAME is the last column and includes "(deleted)" when
+        # unlinked-but-open.
         name = parts[-1]
         size = None
-        for token in parts:
-            if token.isdigit() and int(token) > 1024:
-                size = int(token)
-                break
+        if size_i is not None and size_i < len(parts) and parts[size_i].isdigit():
+            size = int(parts[size_i])
         entries.append(DeletedOpenFile(command=command, pid=pid, size_bytes=size, path=name))
     return entries
 

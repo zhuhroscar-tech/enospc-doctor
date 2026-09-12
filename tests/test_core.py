@@ -67,6 +67,19 @@ def test_parse_lsof_deleted():
     assert len(entries) == 2
     assert entries[0].command == "java"
     assert entries[0].pid == "21874"
+
+
+def test_parse_lsof_deleted_reports_real_size_not_pid():
+    # Regression test: size_bytes must come from the SIZE/OFF column, not
+    # from "first digit token > 1024" -- which previously matched PID
+    # (21874, 1234) before ever reaching the real SIZE/OFF value
+    # (98765432101, 204800), silently reporting the wrong number as the
+    # amount of space a deleted-but-open file is pinning.
+    entries = parse_lsof_deleted(LSOF_SAMPLE)
+    assert entries[0].size_bytes == 98765432101
+    assert entries[0].size_bytes != int(entries[0].pid)
+    assert entries[1].size_bytes == 204800
+    assert entries[1].size_bytes != int(entries[1].pid)
     assert "(deleted)" in entries[0].path
 
 
