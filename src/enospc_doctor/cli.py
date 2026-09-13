@@ -6,7 +6,7 @@ import json
 import sys
 
 from . import __version__
-from .core import diagnose_all, CAUSE_OK, CAUSE_DIAGNOSTIC_FAILED
+from .core import diagnose_all, CAUSE_OK, CAUSE_DIAGNOSTIC_FAILED, CAUSE_RESERVED_CHECK_FAILED
 from .style import print_fields, resolve_style, status_headline
 
 
@@ -40,7 +40,12 @@ def _print_text(reports, show_all: bool, style) -> None:
         if not show_all and r.cause == CAUSE_OK:
             continue
         shown += 1
-        level = "ok" if r.cause == CAUSE_OK else "fail"
+        if r.cause == CAUSE_OK:
+            level = "ok"
+        elif r.cause == CAUSE_RESERVED_CHECK_FAILED:
+            level = "warn"
+        else:
+            level = "fail"
         print()
         print(status_headline(style, level, f"{r.mountpoint} ({r.filesystem}): {r.cause}"))
         print(f"  {r.explanation}")
