@@ -49,8 +49,8 @@ jobs:
       - name: Build a standalone .pyz (zipapp)
         run: |
           python -m pip install . --target build/pyz_root
+          printf 'from enospc_doctor.cli import main\nif __name__ == "__main__":\n    raise SystemExit(main())\n' > build/pyz_root/__main__.py
           python -m zipapp build/pyz_root \
-            --main "enospc_doctor.cli:main" \
             --output dist/enospc-doctor.pyz \
             --python "/usr/bin/env python3"
       - name: Smoke-test the .pyz on this Linux runner
@@ -58,6 +58,17 @@ jobs:
           python3 dist/enospc-doctor.pyz --version
           python3 dist/enospc-doctor.pyz --json > /tmp/ed.json || true
           python3 -m json.tool < /tmp/ed.json > /dev/null
+          # Regression check: the .pyz's exit code must reflect the real
+          # command result, not always be 0 (zipapp's --main template
+          # omits sys.exit(), which previously made every .pyz invocation
+          # report success regardless of actual findings/errors). threshold=0
+          # forces every mount over 0% used to report a cause, a deterministic
+          # nonzero case on any real filesystem.
+          set +e
+          python3 dist/enospc-doctor.pyz --threshold 0 > /dev/null 2>&1
+          bogus_code=$?
+          set -e
+          test "$bogus_code" -eq 2
       - name: Generate checksums
         run: |
           cd dist
