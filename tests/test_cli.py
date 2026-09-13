@@ -10,6 +10,7 @@ from enospc_doctor.core import (
     CAUSE_INODES_FULL,
     CAUSE_OK,
     CAUSE_RESERVED_BLOCKS,
+    CAUSE_RESERVED_CHECK_FAILED,
 )
 
 
@@ -121,4 +122,23 @@ def test_text_output_diagnostic_failed_skips_metric_rows(monkeypatch, capsys):
     assert "diagnostic_failed" in out
     assert "block use" not in out
     assert "inode use" not in out
+    assert rc == 2
+
+
+def test_text_output_reserved_check_failed_shown_as_warn_not_fail(monkeypatch, capsys):
+    # Regression: CAUSE_RESERVED_CHECK_FAILED (an honest "could not
+    # determine" verdict, not a confirmed problem) must render with the
+    # "warn" status level (yellow dot / [!] in no-color mode), never the
+    # "fail" level used for confirmed CAUSE_BLOCKS_FULL/etc.
+    report = MountDiagnosis(
+        mountpoint="/", filesystem="/dev/nvme0n1p2",
+        block_use_pct=99, inode_use_pct=10,
+        cause=CAUSE_RESERVED_CHECK_FAILED,
+        explanation="could not determine reserved blocks",
+    )
+    monkeypatch.setattr("enospc_doctor.cli.diagnose_all", lambda near_full_threshold: [report])
+    rc = main(["--no-color"])
+    out = capsys.readouterr().out
+    assert "[!]" in out
+    assert "[X]" not in out
     assert rc == 2

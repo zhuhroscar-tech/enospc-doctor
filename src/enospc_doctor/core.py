@@ -42,6 +42,7 @@ CAUSE_INODES_FULL = "inodes_full"
 CAUSE_DELETED_OPEN_FILES = "deleted_open_files"
 CAUSE_RESERVED_BLOCKS = "reserved_blocks_only"
 CAUSE_OK = "ok"
+CAUSE_RESERVED_CHECK_FAILED = "reserved_block_check_could_not_be_determined"
 CAUSE_DIAGNOSTIC_FAILED = "diagnostic_failed"
 
 CAUSE_EXPLANATIONS = {
@@ -72,6 +73,15 @@ CAUSE_EXPLANATIONS = {
         "non-reserved capacity."
     ),
     CAUSE_OK: "This filesystem shows no signs of block or inode exhaustion.",
+    CAUSE_RESERVED_CHECK_FAILED: (
+        "The filesystem's block usage is at or near 100%, but whether some "
+        "of that is actually reserved (ext4 'tune2fs -l' reserved-block-count, "
+        "not a genuine exhaustion) could not be determined -- 'tune2fs' failed "
+        "for a privilege reason (permission denied reading the device node, or "
+        "requires root). This is NOT a confirmed 'genuinely out of space' "
+        "verdict: re-run with sudo/root to get a real reserved-blocks answer "
+        "instead of an assumed genuine-full."
+    ),
     CAUSE_DIAGNOSTIC_FAILED: (
         "'df' returned no parseable mount data at all (empty output, unexpected "
         "format, or the binary is missing/unreadable in this environment). This "
@@ -89,6 +99,34 @@ def run(cmd: list, timeout: int = 20) -> str:
         return result.stdout or ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+_PERMISSION_DENIED_RE = re.compile(
+    r"permission denied|must be superuser|must be root|requires? (?:root|superuser)|not permitted",
+    re.IGNORECASE,
+)
+
+
+def run_capture(cmd: list, timeout: int = 20):
+    """Run a read-only subprocess command, returning (stdout, stderr, returncode).
+
+    Unlike run(), this preserves stderr/exit status so callers can tell a
+    genuinely empty/negative result apart from a command that failed because
+    it needs elevated privileges (e.g. `tune2fs -l` on a device node this
+    process can't read)."""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        return result.stdout or "", result.stderr or "", result.returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", str(exc), -1
+
+
+def _is_permission_denied(stderr: str, returncode: int) -> bool:
+    """True if a command's failure looks like a privilege/permission problem
+    rather than a genuine 'no such thing exists' answer."""
+    if returncode == 0:
+        return False
+    return bool(_PERMISSION_DENIED_RE.search(stderr))
 
 
 @dataclass
@@ -178,9 +216,23 @@ def get_deleted_open_files(runner=run) -> list:
     return parse_lsof_deleted(runner(["lsof", "+L1"]))
 
 
-def get_reserved_block_pct(device: str, runner=run) -> Optional[float]:
-    """Best-effort: read the ext4 reserved-block percentage via tune2fs."""
-    out = runner(["tune2fs", "-l", device])
+def get_reserved_block_pct(device: str, runner=run_capture) -> tuple:
+    """Best-effort: read the ext4 reserved-block percentage via tune2fs.
+
+    Returns (pct_or_None, check_failed). check_failed is True only when
+    tune2fs itself failed for a privilege reason (permission denied on the
+    device node, or "requires root") -- distinct from tune2fs succeeding
+    but simply reporting a device with no reserved blocks (returns
+    (None, False) in that case, same as before this fix). Without this
+    distinction, a permission-denied tune2fs read silently produced the
+    same (None) result as "there genuinely are no reserved blocks",
+    causing diagnose_mount() to report a false CAUSE_BLOCKS_FULL (genuine
+    exhaustion) verdict on a mount that was never actually checked for
+    reserved space.
+    """
+    out, err, rc = runner(["tune2fs", "-l", device])
+    if _is_permission_denied(err, rc):
+        return None, True
     total = reserved = None
     for line in out.splitlines():
         if line.startswith("Block count:"):
@@ -194,8 +246,8 @@ def get_reserved_block_pct(device: str, runner=run) -> Optional[float]:
             except ValueError:
                 pass
     if total and reserved is not None and total > 0:
-        return round(100.0 * reserved / total, 2)
-    return None
+        return round(100.0 * reserved / total, 2), False
+    return None, False
 
 
 @dataclass
@@ -255,14 +307,19 @@ def diagnose_mount(
     inode_use_pct: Optional[int],
     deleted_open_files: Optional[list] = None,
     reserved_block_pct: Optional[float] = None,
+    reserved_block_check_failed: bool = False,
     near_full_threshold: int = 95,
 ) -> MountDiagnosis:
     """Classify a single mount's ENOSPC-relevant state.
 
     Priority: inode exhaustion is checked first because it produces the
     most surprising symptom (df -h looks fine); then deleted-but-open
-    files (df/du disagreement); then genuine block exhaustion; then
-    reserved-block false-full; else ok.
+    files (df/du disagreement); then a reserved-block check that itself
+    failed for a privilege reason (must not be silently treated as
+    "genuinely full" -- that would be a false-positive block-exhaustion
+    verdict on a mount whose reserved-block layer was never actually
+    checked); then genuine block exhaustion; then reserved-block
+    false-full; else ok.
 
     `deleted_open_files` here is expected to already be scoped to this
     mount (see `assign_deleted_files_to_mounts`); callers that pass an
@@ -280,6 +337,12 @@ def diagnose_mount(
         cause = CAUSE_INODES_FULL
     elif mount_deleted and block_use_pct is not None and block_use_pct >= near_full_threshold:
         cause = CAUSE_DELETED_OPEN_FILES
+    elif (
+        block_use_pct is not None
+        and block_use_pct >= near_full_threshold
+        and reserved_block_check_failed
+    ):
+        cause = CAUSE_RESERVED_CHECK_FAILED
     elif block_use_pct is not None and block_use_pct >= near_full_threshold:
         if reserved_block_pct is not None and reserved_block_pct > 0:
             cause = CAUSE_RESERVED_BLOCKS
@@ -300,7 +363,7 @@ def diagnose_mount(
     )
 
 
-def diagnose_all(runner=run, near_full_threshold: int = 95) -> list:
+def diagnose_all(runner=run, capture_runner=run_capture, near_full_threshold: int = 95) -> list:
     """Diagnose every mounted filesystem reported by df.
 
     If `df -P` itself returns no parseable mount lines (missing binary,
@@ -330,8 +393,9 @@ def diagnose_all(runner=run, near_full_threshold: int = 95) -> list:
     for mountpoint, (fs, block_pct) in blocks.items():
         inode_pct = inodes.get(mountpoint, (fs, None))[1]
         reserved_pct = None
+        reserved_check_failed = False
         if fs.startswith("/dev/"):
-            reserved_pct = get_reserved_block_pct(fs, runner=runner)
+            reserved_pct, reserved_check_failed = get_reserved_block_pct(fs, runner=capture_runner)
         reports.append(
             diagnose_mount(
                 mountpoint=mountpoint,
@@ -340,6 +404,7 @@ def diagnose_all(runner=run, near_full_threshold: int = 95) -> list:
                 inode_use_pct=inode_pct,
                 deleted_open_files=deleted_by_mount.get(mountpoint, []),
                 reserved_block_pct=reserved_pct,
+                reserved_block_check_failed=reserved_check_failed,
                 near_full_threshold=near_full_threshold,
             )
         )

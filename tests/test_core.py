@@ -6,6 +6,7 @@ from enospc_doctor.core import (
     CAUSE_INODES_FULL,
     CAUSE_OK,
     CAUSE_RESERVED_BLOCKS,
+    CAUSE_RESERVED_CHECK_FAILED,
     DeletedOpenFile,
     assign_deleted_files_to_mounts,
     diagnose_all,
@@ -17,6 +18,7 @@ from enospc_doctor.core import (
     parse_df_output,
     parse_lsof_deleted,
     run,
+    run_capture,
 )
 
 
@@ -96,17 +98,36 @@ def test_get_reserved_block_pct_parses_tune2fs():
     sample = "Block count:              104857600\nReserved block count:     5242880\n"
 
     def fake_runner(cmd, timeout=20):
-        return sample
+        return sample, "", 0
 
-    pct = get_reserved_block_pct("/dev/nvme0n1p2", runner=fake_runner)
+    pct, check_failed = get_reserved_block_pct("/dev/nvme0n1p2", runner=fake_runner)
     assert pct == 5.0
+    assert check_failed is False
 
 
 def test_get_reserved_block_pct_handles_missing_data():
     def fake_runner(cmd, timeout=20):
-        return ""
+        return "", "", 0
 
-    assert get_reserved_block_pct("/dev/sda1", runner=fake_runner) is None
+    pct, check_failed = get_reserved_block_pct("/dev/sda1", runner=fake_runner)
+    assert pct is None
+    assert check_failed is False
+
+
+def test_get_reserved_block_pct_reports_permission_denied_as_check_failed():
+    # Regression: before this fix, get_reserved_block_pct() used the
+    # stdout-only run() helper, so a permission-denied `tune2fs -l`
+    # invocation (common for a non-root process reading a device node)
+    # silently returned "" -- indistinguishable from "tune2fs ran fine
+    # and reported zero reserved blocks". diagnose_mount() then treated
+    # that as a confirmed CAUSE_BLOCKS_FULL (genuine exhaustion) verdict
+    # for a mount whose reserved-block layer was never actually checked.
+    def fake_runner(cmd, timeout=20):
+        return "", "tune2fs: Permission denied to open /dev/nvme0n1p2\n", 1
+
+    pct, check_failed = get_reserved_block_pct("/dev/nvme0n1p2", runner=fake_runner)
+    assert pct is None
+    assert check_failed is True
 
 
 def test_diagnose_mount_inode_exhaustion():
@@ -143,6 +164,22 @@ def test_diagnose_mount_reserved_blocks():
         reserved_block_pct=5.0,
     )
     assert report.cause == CAUSE_RESERVED_BLOCKS
+
+
+def test_diagnose_mount_reserved_check_failed_is_not_false_blocks_full():
+    # Regression: when the reserved-block check itself failed (privilege
+    # error reading tune2fs), diagnose_mount() must report the honest
+    # CAUSE_RESERVED_CHECK_FAILED, never collapse to CAUSE_BLOCKS_FULL as
+    # if the mount were confirmed genuinely exhausted.
+    report = diagnose_mount(
+        mountpoint="/", filesystem="/dev/nvme0n1p2",
+        block_use_pct=99, inode_use_pct=10,
+        reserved_block_pct=None,
+        reserved_block_check_failed=True,
+    )
+    assert report.cause == CAUSE_RESERVED_CHECK_FAILED
+    assert report.cause != CAUSE_BLOCKS_FULL
+    assert report.explanation == CAUSE_EXPLANATIONS[CAUSE_RESERVED_CHECK_FAILED]
 
 
 def test_diagnose_mount_plain_blocks_full():
@@ -199,11 +236,14 @@ def test_diagnose_all_integrates(monkeypatch):
             return DF_SAMPLE
         if cmd[0] == "lsof":
             return LSOF_SAMPLE
-        if cmd[0] == "tune2fs":
-            return "Block count:              104857600\nReserved block count:     0\n"
         return ""
 
-    reports = diagnose_all(runner=fake_runner)
+    def fake_capture_runner(cmd, timeout=20):
+        if cmd[0] == "tune2fs":
+            return "Block count:              104857600\nReserved block count:     0\n", "", 0
+        return "", "", 0
+
+    reports = diagnose_all(runner=fake_runner, capture_runner=fake_capture_runner)
     by_mount = {r.mountpoint: r for r in reports}
     assert by_mount["/"].cause == CAUSE_INODES_FULL
     assert by_mount["/dev/shm"].cause == CAUSE_OK
@@ -234,6 +274,52 @@ def test_run_swallows_timeout(monkeypatch):
     assert run(["df"], timeout=1) == ""
 
 
+def test_diagnose_all_reports_reserved_check_failed_not_false_blocks_full():
+    # Regression at the diagnose_all() integration level: a mount at 99%
+    # block usage whose tune2fs read fails with permission-denied must be
+    # reported as CAUSE_RESERVED_CHECK_FAILED, never as a false confirmed
+    # CAUSE_BLOCKS_FULL.
+    df_full_mount = (
+        "Filesystem     1024-blocks      Used  Available Capacity Mounted on\n"
+        "/dev/nvme0n1p2   104857600  103808000    1049600       99% /\n"
+    )
+    df_inodes_full_mount = (
+        "Filesystem      Inodes   IUsed   IFree IUse% Mounted on\n"
+        "/dev/nvme0n1p2 6553600   65536 6488064    1% /\n"
+    )
+
+    def fake_runner(cmd, timeout=20):
+        if cmd[0] == "df" and "-Pi" in cmd:
+            return df_inodes_full_mount
+        if cmd[0] == "df":
+            return df_full_mount
+        if cmd[0] == "lsof":
+            return ""
+        return ""
+
+    def fake_capture_runner(cmd, timeout=20):
+        if cmd[0] == "tune2fs":
+            return "", "tune2fs: Permission denied to open /dev/nvme0n1p2\n", 1
+        return "", "", 0
+
+    reports = diagnose_all(runner=fake_runner, capture_runner=fake_capture_runner)
+    assert len(reports) == 1
+    assert reports[0].cause == CAUSE_RESERVED_CHECK_FAILED
+    assert reports[0].cause != CAUSE_BLOCKS_FULL
+
+
+def test_run_capture_returns_stdout_stderr_returncode_on_success():
+    stdout, stderr, rc = run_capture(["echo", "enospc-doctor-marker"])
+    assert stdout == "enospc-doctor-marker\n"
+    assert rc == 0
+
+
+def test_run_capture_swallows_missing_binary_oserror():
+    stdout, stderr, rc = run_capture(["/no/such/enospc-doctor-binary-xyz"])
+    assert stdout == ""
+    assert rc == -1
+
+
 def test_parse_lsof_deleted_empty_text_returns_empty_list():
     assert parse_lsof_deleted("") == []
 
@@ -243,8 +329,9 @@ def test_get_reserved_block_pct_swallows_unparseable_counts():
     # with non-integer values -- must not raise, and total/reserved stay
     # unset so the function returns None instead of crashing.
     out = "Block count:              not-a-number\nReserved block count:     also-bad\n"
-    pct = get_reserved_block_pct("/dev/nvme0n1p2", runner=lambda cmd, timeout=20: out)
+    pct, check_failed = get_reserved_block_pct("/dev/nvme0n1p2", runner=lambda cmd, timeout=20: (out, "", 0))
     assert pct is None
+    assert check_failed is False
 
 
 def test_parse_lsof_deleted_falls_back_to_positional_columns_without_header_names():
@@ -338,11 +425,14 @@ def test_diagnose_all_does_not_leak_deleted_files_across_mounts(monkeypatch):
             return df_two_mounts
         if cmd[0] == "lsof":
             return lsof_under_var
-        if cmd[0] == "tune2fs":
-            return "Block count:              104857600\nReserved block count:     0\n"
         return ""
 
-    reports = diagnose_all(runner=fake_runner)
+    def fake_capture_runner(cmd, timeout=20):
+        if cmd[0] == "tune2fs":
+            return "Block count:              104857600\nReserved block count:     0\n", "", 0
+        return "", "", 0
+
+    reports = diagnose_all(runner=fake_runner, capture_runner=fake_capture_runner)
     by_mount = {r.mountpoint: r for r in reports}
     # Before the fix, "/" would also pick up the /var/log deleted file
     # (via bare startswith("/")) and get misdiagnosed/annotated with it.
