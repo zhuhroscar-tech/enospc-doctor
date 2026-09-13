@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enospc-doctor"
-version = "0.1.5"
+version = "0.1.6"
 description = "Diagnose which distinct cause is behind a 'No space left on device' (ENOSPC) error: block exhaustion, inode exhaustion, deleted-but-open files, or reserved-block false-full."
 readme = "README.md"
 license = {text = "MIT"}
