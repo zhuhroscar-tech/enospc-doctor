@@ -75,7 +75,7 @@ pip install enospc-doctor
 Or run the standalone zipapp with no install:
 
 ```bash
-curl -LO https://github.com/zhuhroscar-tech/enospc-doctor/releases/download/v0.1.0/enospc-doctor.pyz
+curl -LO https://github.com/zhuhroscar-tech/enospc-doctor/releases/latest/download/enospc-doctor.pyz
 python3 enospc-doctor.pyz --version
 ```
 
