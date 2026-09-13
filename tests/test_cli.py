@@ -3,7 +3,14 @@ import json
 import pytest
 
 from enospc_doctor.cli import main
-from enospc_doctor.core import DeletedOpenFile, MountDiagnosis, CAUSE_INODES_FULL, CAUSE_OK, CAUSE_RESERVED_BLOCKS
+from enospc_doctor.core import (
+    DeletedOpenFile,
+    MountDiagnosis,
+    CAUSE_DIAGNOSTIC_FAILED,
+    CAUSE_INODES_FULL,
+    CAUSE_OK,
+    CAUSE_RESERVED_BLOCKS,
+)
 
 
 def _fake_report(cause=CAUSE_INODES_FULL, mountpoint="/"):
@@ -93,4 +100,25 @@ def test_text_output_lists_deleted_open_files(monkeypatch, capsys):
     assert "52428800 bytes" in out
     assert "pid 5678 (python3)" in out
     assert "size unknown" in out
+    assert rc == 2
+
+
+def test_text_output_diagnostic_failed_skips_metric_rows(monkeypatch, capsys):
+    # Regression: when df/lsof itself couldn't be run (diagnostic_failed),
+    # _print_text must print the headline+explanation and then skip the
+    # block/inode metric rows entirely (they're meaningless without real
+    # data) rather than printing "None%" or raising on missing fields.
+    # This continue-on-diagnostic_failed branch had zero test coverage.
+    report = MountDiagnosis(
+        mountpoint="/", filesystem="unknown",
+        block_use_pct=None, inode_use_pct=None,
+        cause=CAUSE_DIAGNOSTIC_FAILED,
+        explanation="'df -P' produced no usable output.",
+    )
+    monkeypatch.setattr("enospc_doctor.cli.diagnose_all", lambda near_full_threshold: [report])
+    rc = main([])
+    out = capsys.readouterr().out
+    assert "diagnostic_failed" in out
+    assert "block use" not in out
+    assert "inode use" not in out
     assert rc == 2

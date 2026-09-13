@@ -209,6 +209,15 @@ def test_diagnose_all_integrates(monkeypatch):
     assert by_mount["/dev/shm"].cause == CAUSE_OK
 
 
+def test_run_returns_real_stdout_on_success():
+    # The success path (subprocess.run completing normally and returning
+    # its stdout) had zero direct coverage -- run() was only ever
+    # exercised via error paths (missing binary, timeout) or via a fake
+    # runner in other tests, never via a real subprocess actually
+    # succeeding and this function returning its output.
+    assert run(["echo", "enospc-doctor-marker"]) == "enospc-doctor-marker\n"
+
+
 def test_run_swallows_missing_binary_oserror():
     # A nonexistent command raises OSError (FileNotFoundError) inside
     # subprocess.run; run() must degrade to "" rather than propagate.
@@ -236,6 +245,56 @@ def test_get_reserved_block_pct_swallows_unparseable_counts():
     out = "Block count:              not-a-number\nReserved block count:     also-bad\n"
     pct = get_reserved_block_pct("/dev/nvme0n1p2", runner=lambda cmd, timeout=20: out)
     assert pct is None
+
+
+def test_parse_lsof_deleted_falls_back_to_positional_columns_without_header_names():
+    # Regression: when lsof's header lacks the literal "COMMAND"/"PID"
+    # tokens (e.g. a locale/lsof-version variant with different column
+    # labels), parse_lsof_deleted must still extract command/pid instead
+    # of raising ValueError -- it falls back to the first two positional
+    # columns. This except-ValueError branch (header.index raising) had
+    # zero direct test coverage before this test.
+    text = (
+        "PROC       ID    USR   FD   TYPE DEVICE  SIZE/OFF   NODE NAME\n"
+        "java    21874    app  47w   REG  253,0 98765432101 445566 /var/log/app/access.log (deleted)\n"
+    )
+    entries = parse_lsof_deleted(text)
+    assert len(entries) == 1
+    assert entries[0].command == "java"
+    assert entries[0].pid == "21874"
+    # SIZE/OFF header token is still present here, so size is still parsed.
+    assert entries[0].size_bytes == 98765432101
+
+
+def test_parse_lsof_deleted_size_none_when_size_off_column_missing():
+    # Regression: when the header has no "SIZE/OFF" token at all, size_i
+    # stays None and every entry's size_bytes must be None rather than
+    # guessing at a column -- this except-ValueError branch (size_i
+    # lookup failing) had zero direct test coverage before this test.
+    text = (
+        "COMMAND     PID   USER   FD   TYPE DEVICE   BYTES   NODE NAME\n"
+        "java      21874   app   47w   REG  253,0    98765  445566 /var/log/app/access.log (deleted)\n"
+    )
+    entries = parse_lsof_deleted(text)
+    assert len(entries) == 1
+    assert entries[0].size_bytes is None
+
+
+def test_parse_lsof_deleted_skips_blank_and_short_lines():
+    # Regression: parse_lsof_deleted must tolerate a blank line between
+    # entries (continue at line 161) and a line with fewer than 8
+    # whitespace-split tokens, e.g. a truncated/corrupted lsof row
+    # (continue at line 164), skipping both without raising or
+    # fabricating an entry.
+    text = (
+        "COMMAND     PID   USER   FD   TYPE DEVICE  SIZE/OFF   NODE NAME\n"
+        "\n"
+        "short line\n"
+        "java      21874   app   47w   REG  253,0 98765432101 445566 /var/log/app/access.log (deleted)\n"
+    )
+    entries = parse_lsof_deleted(text)
+    assert len(entries) == 1
+    assert entries[0].pid == "21874"
 
 
 def test_assign_deleted_files_longest_prefix_wins():
