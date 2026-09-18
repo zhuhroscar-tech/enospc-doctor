@@ -14,10 +14,20 @@ covering at least four genuinely distinct root causes on Linux:
                                    log rotation without a reload signal);
                                    `du` can't see it, so `df` and `du`
                                    disagree, sometimes by tens of GB.
-  4. ext4/xfs reserved blocks  -- a filesystem can report "full" for a
+  4. ext2/3/4 reserved blocks -- a filesystem can report "full" for a
                                    non-root process while a few percent
                                    is still reserved for root (tune2fs -l
-                                   reserved-block-count).
+                                   reserved-block-count). This check is
+                                   ext-family only: XFS has no comparable
+                                   admin-tunable "reserved for root"
+                                   percentage (its small internal
+                                   privileged-transaction reservation is
+                                   fixed, not a root-vs-everyone-else
+                                   carve-out), so this tool does not
+                                   claim to detect it on XFS -- a near-
+                                   full XFS mount is reported as genuine
+                                   block exhaustion (CAUSE_BLOCKS_FULL)
+                                   rather than a false "reserved" verdict.
 
 Multiple 2026-dated blog posts document the exact same multi-step manual
 diagnostic ritual for this (df -h, then df -i, then du -x, then lsof
@@ -27,7 +37,8 @@ all of them and reconcile the numbers by hand. This tool automates that
 reconciliation into one command and one clear verdict per filesystem.
 
 Strictly read-only: never deletes, truncates, or restarts anything. It
-only reads df/lsof/tune2fs/xfs_info output.
+only reads df/lsof/tune2fs output (no xfs_info call exists -- XFS
+reserved-space detection is intentionally not implemented, see above).
 """
 from __future__ import annotations
 
