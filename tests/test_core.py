@@ -130,6 +130,28 @@ def test_get_reserved_block_pct_reports_permission_denied_as_check_failed():
     assert check_failed is True
 
 
+def test_get_reserved_block_pct_reports_missing_binary_as_check_failed():
+    # Regression: run_capture() signals "could not execute the command at
+    # all" (tune2fs/e2fsprogs not installed -- plausible on minimal or
+    # container-focused Linux distros) via returncode == -1, with the
+    # OSError text in stderr rather than a "permission denied"-style
+    # message. Before this fix, get_reserved_block_pct() only checked
+    # _is_permission_denied(err, rc), which requires a "permission
+    # denied"/"must be root" phrase in stderr -- a plain "No such file or
+    # directory" OSError text does not match, so this fell through to
+    # (None, False), identical to "tune2fs ran fine, zero reserved
+    # blocks". diagnose_mount() then reported a false CAUSE_BLOCKS_FULL
+    # (genuine exhaustion) verdict for a near-full ext4 mount whose
+    # reserved-block layer was never actually checked, on any host
+    # missing the tune2fs binary.
+    def fake_runner(cmd, timeout=20):
+        return "", "[Errno 2] No such file or directory: 'tune2fs'", -1
+
+    pct, check_failed = get_reserved_block_pct("/dev/nvme0n1p2", runner=fake_runner)
+    assert pct is None
+    assert check_failed is True
+
+
 def test_diagnose_mount_inode_exhaustion():
     report = diagnose_mount(
         mountpoint="/", filesystem="/dev/nvme0n1p2",

@@ -230,19 +230,26 @@ def get_deleted_open_files(runner=run) -> list:
 def get_reserved_block_pct(device: str, runner=run_capture) -> tuple:
     """Best-effort: read the ext4 reserved-block percentage via tune2fs.
 
-    Returns (pct_or_None, check_failed). check_failed is True only when
-    tune2fs itself failed for a privilege reason (permission denied on the
-    device node, or "requires root") -- distinct from tune2fs succeeding
-    but simply reporting a device with no reserved blocks (returns
-    (None, False) in that case, same as before this fix). Without this
-    distinction, a permission-denied tune2fs read silently produced the
-    same (None) result as "there genuinely are no reserved blocks",
-    causing diagnose_mount() to report a false CAUSE_BLOCKS_FULL (genuine
-    exhaustion) verdict on a mount that was never actually checked for
-    reserved space.
+    Returns (pct_or_None, check_failed). check_failed is True when tune2fs
+    itself failed for a privilege reason (permission denied on the device
+    node, or "requires root"), OR when the command could not be executed
+    at all (tune2fs/e2fsprogs not installed -- run_capture's except branch
+    signals this with returncode == -1). Both cases are distinct from
+    tune2fs actually running and simply reporting a device with no
+    reserved blocks, or a non-ext4 filesystem type it can't parse (returns
+    (None, False) in either of those cases, by design -- see the XFS note
+    in this module's docstring).
+
+    Without the returncode == -1 branch, an environment missing the
+    tune2fs binary entirely (e2fsprogs is not installed by default on some
+    minimal/container Linux distros) silently produced the same (None,
+    False) result as "there genuinely are no reserved blocks", causing
+    diagnose_mount() to report a false CAUSE_BLOCKS_FULL (genuine
+    exhaustion) verdict for every near-full ext4 mount on that host, even
+    though the reserved-block layer was never actually checked at all.
     """
     out, err, rc = runner(["tune2fs", "-l", device])
-    if _is_permission_denied(err, rc):
+    if rc == -1 or _is_permission_denied(err, rc):
         return None, True
     total = reserved = None
     for line in out.splitlines():
