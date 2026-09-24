@@ -47,4 +47,4 @@ python -m pip install -e '.[dev]'
 python -m pytest -v
 ```
 
-[Demo video](docs/demo.mp4) · [MIT license](LICENSE).
+[Demo video](docs/demo.mp4) · [Release history](CHANGELOG.md) · [MIT license](LICENSE).

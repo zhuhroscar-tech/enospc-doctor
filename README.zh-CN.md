@@ -47,4 +47,4 @@ python -m pip install -e '.[dev]'
 python -m pytest -v
 ```
 
-[演示视频](docs/demo.mp4) · [MIT 许可证](LICENSE)。
+[演示视频](docs/demo.mp4) · [发布历史](CHANGELOG.md) · [MIT 许可证](LICENSE)。
