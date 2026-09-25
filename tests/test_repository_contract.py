@@ -47,6 +47,7 @@ def test_changelog_documents_current_release():
     changelog = _read("CHANGELOG.md")
     version = version_match.group(1)
     assert f"## v{version} - " in changelog
+    assert "## v0.1.11 - 2026-09-25" in changelog
     assert "## v0.1.9 - 2026-09-24" in changelog
     assert "## v0.1.0 - 2026-09-10" in changelog
 
@@ -54,12 +55,22 @@ def test_changelog_documents_current_release():
 def test_ci_covers_tests_build_pyz_and_release_assets():
     ci = _read(".github/workflows/ci.yml")
 
+    assert 'tags: ["v*"]' in ci
     assert "python -m pytest -v" in ci
     assert "python -m build" in ci
     assert "python -m zipapp" in ci
     assert "dist/enospc-doctor.pyz" in ci
     assert "sha256sum * > SHA256SUMS.txt" in ci
     assert "actions/upload-artifact@v4" in ci
+
+
+def test_package_metadata_links_project_resources():
+    pyproject = _read("pyproject.toml")
+
+    assert "[project.urls]" in pyproject
+    assert 'Homepage = "https://github.com/zhuhroscar-tech/enospc-doctor"' in pyproject
+    assert 'Changelog = "https://github.com/zhuhroscar-tech/enospc-doctor/blob/main/CHANGELOG.md"' in pyproject
+    assert 'Issues = "https://github.com/zhuhroscar-tech/enospc-doctor/issues"' in pyproject
 
 
 def test_codeql_workflow_is_configured_for_python():

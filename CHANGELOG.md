@@ -2,6 +2,12 @@
 
 All notable changes to `enospc-doctor` are documented here.
 
+## v0.1.11 - 2026-09-25
+
+- Made release-tag validation explicit so `v*` tags run the same tests, build, `.pyz` smoke check, and checksum generation as main-branch pushes.
+- Added package project URLs for the changelog, homepage, and issue tracker.
+- Ignored local build/smoke directories used during release verification.
+
 ## v0.1.10 - 2026-09-24
 
 - Added this changelog and repository-contract coverage so release history, license links, CI wiring, CodeQL, and release artifacts stay visible and testable.
